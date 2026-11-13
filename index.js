@@ -7,8 +7,9 @@
  *    near real time without screenshots.
  *  - Polls the same server for Muse's short comments and shows them
  *    in a small floating panel inside the tavern: draggable, collapsible
- *    to a bubble, with an unread badge. Panel colours follow the user's
- *    Konata preset palette (dark plum + hot pink + orchid).
+ *    to a bubble, with an unread badge. Panel colours: the "Konata blue"
+ *    palette the user picked (deep navy + bright blue gradient + a
+ *    green accent for the badge, after rejecting a pink/plum version).
  *
  * - Works in SillyTavern and TauriTavern (pure frontend extension).
  * - Never reads or sends model API keys. Sends chat text only.
@@ -19,7 +20,7 @@
   'use strict';
 
   const EXT_ID = 'muse-companion-relay';
-  const VERSION = '0.3.0';
+  const VERSION = '0.3.1';
   const DEFAULTS = {
     enabled: true,
     endpoint: 'http://119.3.178.203:8787/st-inbox',
@@ -217,18 +218,18 @@
 
   const PANEL_CSS = `
 #mc-panel{position:fixed;z-index:9999;width:54px;height:54px;font-family:inherit;
-  --mc-bg:rgba(47,41,48,.94);--mc-border:#584964;--mc-pink:#ff69b4;
-  --mc-pink-deep:#d946a6;--mc-orchid:#ba68c8;--mc-text:#feeff4;
-  --mc-text-soft:#fbcfe8;--mc-time:#ffb3d9;--mc-mint:#46e0c8;}
+  --mc-bg:rgba(20,38,63,.95);--mc-border:#2e4a73;--mc-pink:#2f7fe0;
+  --mc-pink-deep:#2f7fe0;--mc-orchid:#4db2e8;--mc-text:#eef6ff;
+  --mc-text-soft:#bfd9ff;--mc-time:#9cc3f5;--mc-mint:#5eeaa0;}
 #mc-bubble{position:absolute;right:0;bottom:0;width:54px;height:54px;border-radius:50%;
   background:linear-gradient(135deg,var(--mc-pink) 0%,var(--mc-pink-deep) 55%,var(--mc-orchid) 100%);
   color:#fff;font-size:22px;font-weight:700;display:flex;align-items:center;justify-content:center;
-  box-shadow:0 4px 14px rgba(217,70,166,.45);cursor:pointer;user-select:none;
-  -webkit-user-select:none;touch-action:none;border:2px solid rgba(255,179,217,.75);}
+  box-shadow:0 4px 14px rgba(47,127,224,.5);cursor:pointer;user-select:none;
+  -webkit-user-select:none;touch-action:none;border:2px solid rgba(188,216,255,.75);}
 #mc-badge{position:absolute;top:-4px;right:-4px;min-width:19px;height:19px;border-radius:10px;
-  background:var(--mc-mint);color:#20312c;font-size:11px;font-weight:700;
+  background:var(--mc-mint);color:#123324;font-size:11px;font-weight:700;
   display:none;align-items:center;justify-content:center;padding:0 5px;
-  border:2px solid #2f2930;}
+  border:2px solid #14263f;}
 #mc-box{position:absolute;right:0;bottom:64px;width:min(78vw,300px);
   background:var(--mc-bg);border:1.5px solid var(--mc-pink-deep);border-radius:14px;
   box-shadow:0 10px 30px rgba(0,0,0,.5);overflow:hidden;display:none;backdrop-filter:blur(3px);}
@@ -242,7 +243,7 @@
 #mc-panel-list{max-height:38vh;overflow-y:auto;padding:8px 10px;scrollbar-width:thin;}
 #mc-panel-list:empty::after{content:'还没有评语，我正在窥屏中…';color:var(--mc-time);font-size:12px;}
 .mc-comment{padding:6px 8px;margin-bottom:7px;border-radius:10px;
-  background:rgba(88,73,100,.45);border:1px solid rgba(255,179,217,.28);}
+  background:rgba(46,74,115,.45);border:1px solid rgba(156,195,245,.3);}
 .mc-comment-head{color:var(--mc-time);font-size:11px;margin-bottom:2px;}
 .mc-comment-text{color:var(--mc-text);font-size:13px;line-height:1.45;white-space:pre-wrap;word-break:break-word;}
 `;
