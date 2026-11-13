@@ -1,9 +1,14 @@
 /*
- * Muse Companion Relay — SillyTavern / TauriTavern UI extension (v0.2)
+ * Muse Companion Relay — SillyTavern / TauriTavern UI extension (v0.3)
  *
- * Forwards each finished chat message (yours and the character's) as JSON
- * to your own server inbox, so Muse can follow the story in near real
- * time without screenshots.
+ * Two-way companion:
+ *  - Forwards each finished chat message (yours and the character's) as
+ *    JSON to your own server inbox, so Muse can follow the story in
+ *    near real time without screenshots.
+ *  - Polls the same server for Muse's short comments and shows them
+ *    in a small floating panel inside the tavern: draggable, collapsible
+ *    to a bubble, with an unread badge. Panel colours follow the user's
+ *    Konata preset palette (dark plum + hot pink + orchid).
  *
  * - Works in SillyTavern and TauriTavern (pure frontend extension).
  * - Never reads or sends model API keys. Sends chat text only.
@@ -14,17 +19,24 @@
   'use strict';
 
   const EXT_ID = 'muse-companion-relay';
-  const VERSION = '0.2.0';
+  const VERSION = '0.3.0';
   const DEFAULTS = {
     enabled: true,
     endpoint: 'http://119.3.178.203:8787/st-inbox',
     token: '',
     sendLastOnChatChange: 3,
     debug: false,
+    panelOpen: false,
+    panelX: null,
+    panelY: null,
+    lastCommentId: 0,
+    commentPollSecs: 15,
   };
 
   const seen = new Set();
   let settingsEl = null;
+  let panelEl = null;
+  let unread = 0;
 
   function getCtx() {
     if (window.SillyTavern && typeof window.SillyTavern.getContext === 'function') {
@@ -43,7 +55,7 @@
   }
 
   function saveSettings(ctx) {
-    if (typeof ctx.saveSettingsDebounced === 'function') ctx.saveSettingsDebounced();
+    if (ctx && typeof ctx.saveSettingsDebounced === 'function') ctx.saveSettingsDebounced();
   }
 
   function log(ctx, ...args) {
@@ -58,6 +70,8 @@
     if (ctx.chat_metadata && ctx.chat_metadata.chat_id) return String(ctx.chat_metadata.chat_id);
     return 'unknown-chat';
   }
+
+  /* ---------------- uplink: chat messages -> server inbox ---------------- */
 
   function post(ctx, payload) {
     const cfg = settings(ctx);
@@ -121,6 +135,238 @@
     for (let i = start; i < chat.length; i++) sendByIndex(ctx, eventType, i);
   }
 
+  /* ---------------- downlink: server comment box -> floating panel ---------------- */
+
+  function commentsUrl(ctx) {
+    const cfg = settings(ctx);
+    try {
+      const u = new URL(cfg.endpoint);
+      return u.origin + '/st-comments';
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function fmtTime(iso) {
+    try {
+      const d = new Date(iso);
+      const hh = String(d.getHours()).padStart(2, '0');
+      const mm = String(d.getMinutes()).padStart(2, '0');
+      return hh + ':' + mm;
+    } catch (e) {
+      return '';
+    }
+  }
+
+  function renderComment(comment) {
+    if (!panelEl) return;
+    const list = panelEl.querySelector('#mc-panel-list');
+    if (!list) return;
+    if (list.querySelector('[data-mc-id="' + comment.id + '"]')) return;
+    const item = document.createElement('div');
+    item.className = 'mc-comment';
+    item.dataset.mcId = comment.id;
+    const head = document.createElement('div');
+    head.className = 'mc-comment-head';
+    head.textContent = '小此' + (comment.at ? ' · ' + fmtTime(comment.at) : '');
+    const body = document.createElement('div');
+    body.className = 'mc-comment-text';
+    body.textContent = comment.text || '';
+    item.appendChild(head);
+    item.appendChild(body);
+    list.appendChild(item);
+    while (list.children.length > 60) list.removeChild(list.firstChild);
+    list.scrollTop = list.scrollHeight;
+  }
+
+  function setBadge() {
+    if (!panelEl) return;
+    const badge = panelEl.querySelector('#mc-badge');
+    if (!badge) return;
+    badge.textContent = unread > 99 ? '99+' : String(unread);
+    badge.style.display = unread > 0 ? 'flex' : 'none';
+  }
+
+  function fetchComments() {
+    const ctx = getCtx();
+    if (!ctx) return;
+    const cfg = settings(ctx);
+    if (!cfg.enabled || !cfg.token) return;
+    const url = commentsUrl(ctx);
+    if (!url) return;
+    fetch(url + '?since=' + encodeURIComponent(cfg.lastCommentId || 0), {
+      method: 'GET',
+      headers: { 'X-Muse-Token': cfg.token },
+    }).then(r => (r.ok ? r.json() : null)).then(data => {
+      if (!data || !Array.isArray(data.comments)) return;
+      const fresh = data.comments
+        .filter(c => Number(c.id) > Number(cfg.lastCommentId || 0))
+        .sort((a, b) => Number(a.id) - Number(b.id));
+      if (fresh.length) {
+        ensurePanel();
+        for (const c of fresh) renderComment(c);
+        cfg.lastCommentId = Number(data.latest || fresh[fresh.length - 1].id);
+        saveSettings(ctx);
+        if (!cfg.panelOpen) {
+          unread += fresh.length;
+          setBadge();
+        }
+      }
+    }).catch(err => log(ctx, 'comment fetch failed', err));
+  }
+
+  const PANEL_CSS = `
+#mc-panel{position:fixed;z-index:9999;width:54px;height:54px;font-family:inherit;
+  --mc-bg:rgba(47,41,48,.94);--mc-border:#584964;--mc-pink:#ff69b4;
+  --mc-pink-deep:#d946a6;--mc-orchid:#ba68c8;--mc-text:#feeff4;
+  --mc-text-soft:#fbcfe8;--mc-time:#ffb3d9;--mc-mint:#46e0c8;}
+#mc-bubble{position:absolute;right:0;bottom:0;width:54px;height:54px;border-radius:50%;
+  background:linear-gradient(135deg,var(--mc-pink) 0%,var(--mc-pink-deep) 55%,var(--mc-orchid) 100%);
+  color:#fff;font-size:22px;font-weight:700;display:flex;align-items:center;justify-content:center;
+  box-shadow:0 4px 14px rgba(217,70,166,.45);cursor:pointer;user-select:none;
+  -webkit-user-select:none;touch-action:none;border:2px solid rgba(255,179,217,.75);}
+#mc-badge{position:absolute;top:-4px;right:-4px;min-width:19px;height:19px;border-radius:10px;
+  background:var(--mc-mint);color:#20312c;font-size:11px;font-weight:700;
+  display:none;align-items:center;justify-content:center;padding:0 5px;
+  border:2px solid #2f2930;}
+#mc-box{position:absolute;right:0;bottom:64px;width:min(78vw,300px);
+  background:var(--mc-bg);border:1.5px solid var(--mc-pink-deep);border-radius:14px;
+  box-shadow:0 10px 30px rgba(0,0,0,.5);overflow:hidden;display:none;backdrop-filter:blur(3px);}
+#mc-panel.mc-open #mc-box{display:block;}
+#mc-head{display:flex;align-items:center;justify-content:space-between;
+  padding:8px 12px;cursor:move;touch-action:none;
+  background:linear-gradient(90deg,var(--mc-pink-deep),var(--mc-orchid));}
+#mc-head .mc-title{color:#fff;font-size:13px;font-weight:700;letter-spacing:.5px;}
+#mc-close{background:rgba(255,255,255,.22);color:#fff;border:none;border-radius:8px;
+  font-size:12px;padding:3px 9px;cursor:pointer;}
+#mc-panel-list{max-height:38vh;overflow-y:auto;padding:8px 10px;scrollbar-width:thin;}
+#mc-panel-list:empty::after{content:'还没有评语，我正在窥屏中…';color:var(--mc-time);font-size:12px;}
+.mc-comment{padding:6px 8px;margin-bottom:7px;border-radius:10px;
+  background:rgba(88,73,100,.45);border:1px solid rgba(255,179,217,.28);}
+.mc-comment-head{color:var(--mc-time);font-size:11px;margin-bottom:2px;}
+.mc-comment-text{color:var(--mc-text);font-size:13px;line-height:1.45;white-space:pre-wrap;word-break:break-word;}
+`;
+
+  function applyPanelPos(ctx) {
+    if (!panelEl) return;
+    const cfg = settings(ctx);
+    let x = cfg.panelX;
+    let y = cfg.panelY;
+    if (typeof x !== 'number' || typeof y !== 'number') {
+      x = Math.max(8, window.innerWidth - 70);
+      y = Math.max(8, window.innerHeight - 190);
+    }
+    x = Math.min(Math.max(0, x), Math.max(0, window.innerWidth - 54));
+    y = Math.min(Math.max(0, y), Math.max(0, window.innerHeight - 54));
+    panelEl.style.left = x + 'px';
+    panelEl.style.top = y + 'px';
+  }
+
+  function setPanelOpen(ctx, open) {
+    const cfg = settings(ctx);
+    cfg.panelOpen = !!open;
+    saveSettings(ctx);
+    if (!panelEl) return;
+    panelEl.classList.toggle('mc-open', !!open);
+    if (open) {
+      unread = 0;
+      setBadge();
+      fetchComments();
+      const list = panelEl.querySelector('#mc-panel-list');
+      if (list) list.scrollTop = list.scrollHeight;
+    }
+  }
+
+  function makeDraggable(ctx, handle, onTap) {
+    let startX = 0, startY = 0, origX = 0, origY = 0, moved = false, dragging = false;
+    handle.addEventListener('pointerdown', (e) => {
+      if (e.target && e.target.id === 'mc-close') return;
+      dragging = true;
+      moved = false;
+      startX = e.clientX; startY = e.clientY;
+      const rect = panelEl.getBoundingClientRect();
+      origX = rect.left; origY = rect.top;
+      try { handle.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+      e.preventDefault();
+    });
+    handle.addEventListener('pointermove', (e) => {
+      if (!dragging) return;
+      const dx = e.clientX - startX;
+      const dy = e.clientY - startY;
+      if (Math.abs(dx) + Math.abs(dy) > 6) moved = true;
+      if (!moved) return;
+      const nx = Math.min(Math.max(0, origX + dx), Math.max(0, window.innerWidth - 54));
+      const ny = Math.min(Math.max(0, origY + dy), Math.max(0, window.innerHeight - 54));
+      panelEl.style.left = nx + 'px';
+      panelEl.style.top = ny + 'px';
+    });
+    const finish = (e) => {
+      if (!dragging) return;
+      dragging = false;
+      const cfg = settings(ctx);
+      const rect = panelEl.getBoundingClientRect();
+      cfg.panelX = Math.round(rect.left);
+      cfg.panelY = Math.round(rect.top);
+      saveSettings(ctx);
+      if (!moved && onTap) onTap(e);
+    };
+    handle.addEventListener('pointerup', finish);
+    handle.addEventListener('pointercancel', finish);
+  }
+
+  function ensurePanel() {
+    const ctx = getCtx();
+    if (!ctx || !document.body) return;
+    if (document.getElementById('mc-panel')) {
+      panelEl = document.getElementById('mc-panel');
+      return;
+    }
+    if (!document.getElementById('mc-panel-style')) {
+      const style = document.createElement('style');
+      style.id = 'mc-panel-style';
+      style.textContent = PANEL_CSS;
+      document.head.appendChild(style);
+    }
+    const wrap = document.createElement('div');
+    wrap.id = 'mc-panel';
+    const box = document.createElement('div');
+    box.id = 'mc-box';
+    const head = document.createElement('div');
+    head.id = 'mc-head';
+    const title = document.createElement('span');
+    title.className = 'mc-title';
+    title.textContent = '小此的评语';
+    const closeBtn = document.createElement('button');
+    closeBtn.id = 'mc-close';
+    closeBtn.type = 'button';
+    closeBtn.textContent = '收起';
+    head.appendChild(title);
+    head.appendChild(closeBtn);
+    const list = document.createElement('div');
+    list.id = 'mc-panel-list';
+    box.appendChild(head);
+    box.appendChild(list);
+    const bubble = document.createElement('div');
+    bubble.id = 'mc-bubble';
+    bubble.textContent = '此';
+    const badge = document.createElement('span');
+    badge.id = 'mc-badge';
+    bubble.appendChild(badge);
+    wrap.appendChild(box);
+    wrap.appendChild(bubble);
+    document.body.appendChild(wrap);
+    panelEl = wrap;
+    const cfg = settings(ctx);
+    wrap.classList.toggle('mc-open', !!cfg.panelOpen);
+    applyPanelPos(ctx);
+    makeDraggable(ctx, bubble, () => setPanelOpen(getCtx(), !settings(getCtx()).panelOpen));
+    makeDraggable(ctx, head, null);
+    closeBtn.addEventListener('click', () => setPanelOpen(getCtx(), false));
+    setBadge();
+  }
+
+  /* ---------------- settings UI ---------------- */
+
   function buildSettingsUI(ctx) {
     const host = document.querySelector('#extensions_settings');
     if (!host || document.querySelector('#muse-companion-settings')) return;
@@ -145,7 +391,7 @@
             <input type="text" id="mc-token" class="text_pole" value="${cfg.token || ''}">
           </label>
           <input type="button" id="mc-test" class="menu_button" value="发一条测试消息">
-          <small>只发送聊天文字，不发送任何密钥。关掉开关立即停止。</small>
+          <small>只发送聊天文字，不发送任何密钥。关掉开关立即停止。开启后屏幕角落会出现小此的评语悬浮窗（可拖动、可收起）。</small>
         </div>
       </div>`;
     host.appendChild(wrap);
@@ -169,6 +415,8 @@
     });
   }
 
+  /* ---------------- wiring ---------------- */
+
   function register() {
     const ctx = getCtx();
     if (!ctx || !ctx.eventSource) return false;
@@ -187,11 +435,22 @@
     });
 
     buildSettingsUI(ctx);
+    ensurePanel();
+
+    const cfg = settings(ctx);
+    const pollMs = Math.max(8, Number(cfg.commentPollSecs) || 15) * 1000;
+    setTimeout(fetchComments, 4000);
+    setInterval(fetchComments, pollMs);
+    setInterval(ensurePanel, 5000);
+
     window.MuseCompanion = {
       sendLast: (n = 5) => sendLast(getCtx(), n, 'MANUAL'),
       test: () => post(getCtx(), { kind: 'st-test', event: 'MANUAL_TEST', sentAt: new Date().toISOString() }),
+      fetchComments,
+      openPanel: () => setPanelOpen(getCtx(), true),
+      version: VERSION,
     };
-    log(ctx, 'registered');
+    log(ctx, 'registered v' + VERSION);
     return true;
   }
 
